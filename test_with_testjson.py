@@ -11,7 +11,7 @@ def main():
     
     # Generate PDF from the test.json file
     input_file = "sample_data/test.json"
-    output_file = "output/test_json_output.pdf"
+    output_file = "output/test_json_output7.pdf"
     
     try:
         generator.convert_file(input_file, output_file, title="Gap Analysis Report")

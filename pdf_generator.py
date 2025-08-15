@@ -269,8 +269,12 @@ class JSONToPDFConverter:
                 fontName='Helvetica-Bold' if level == 0 else 'Helvetica'
             )
 
-            # Create clickable link (use simple text for now to avoid anchor issues)
-            link_text = title
+            # Create clickable link to the corresponding anchor
+            if anchor:
+                # Use ReportLab's internal link format with href
+                link_text = f'<a href="#{anchor}" color="{toc_entry_style.textColor}">{title}</a>'
+            else:
+                link_text = title
 
             toc_content.append(Paragraph(link_text, toc_entry_style))
 
@@ -482,8 +486,9 @@ class JSONToPDFConverter:
             # Special handling for section analyses structure
             if key == 'section_analyses' and isinstance(value, dict):
                 self._extract_section_toc_entries(value, level + 1)
-                # Still render the section analyses content normally
-                # Don't continue here - let it fall through to normal rendering
+                # Render section analyses with special handling for individual sections
+                content.extend(self._render_section_analyses(key, value, level))
+                continue
 
             # Add TOC entry for sections that should be included (only for main sections)
             elif level <= 1 and self._should_include_in_toc(key, level):
@@ -494,6 +499,19 @@ class JSONToPDFConverter:
                     'anchor': anchor,
                     'level': level
                 })
+
+                # Add a header with anchor for this section
+                section_header_style = ParagraphStyle(
+                    f'TOCSection{level}',
+                    parent=self.style_manager.styles['heading'],
+                    textColor=self.style_manager.get_color('primary'),
+                    spaceBefore=12,
+                    spaceAfter=8,
+                    fontSize=16,
+                    fontName='Helvetica-Bold'
+                )
+                header_with_anchor = f'<a name="{anchor}"/>{header_text}'
+                content.append(Paragraph(header_with_anchor, section_header_style))
 
             # Determine if this should be a header, subheader, or content
             if self._is_title_key(key):
@@ -515,6 +533,132 @@ class JSONToPDFConverter:
                 content.extend(self._render_as_paragraph(key, value, level))
             else:
                 content.extend(self._render_as_field(key, value, level))
+
+        return content
+
+    def _render_section_analyses(self, key: str, section_analyses: Dict, level: int) -> List:
+        """Render section analyses with proper anchors for TOC navigation."""
+        content = []
+
+        # Add section analyses header
+        header_text = self._format_key(key)
+        header_style = ParagraphStyle(
+            f'SectionAnalysesHeader{level}',
+            parent=self.style_manager.styles['heading'],
+            textColor=self.style_manager.get_color('primary'),
+            spaceBefore=12,
+            spaceAfter=8
+        )
+        content.append(Paragraph(header_text, header_style))
+
+        # Render each individual section
+        for section_key, section_data in section_analyses.items():
+            if isinstance(section_data, dict):
+                # Extract section number and title
+                section_num = section_data.get('section', section_key)
+                section_title = section_data.get('section_title', '')
+
+                if section_title:
+                    # Create section header with anchor
+                    section_header = f"Section {section_num}: {section_title}"
+                    section_anchor = self._create_anchor(f"section_{section_num}_{section_title}")
+
+                    # Create section header style
+                    section_header_style = ParagraphStyle(
+                        f'IndividualSectionHeader{level}',
+                        parent=self.style_manager.styles['heading'],
+                        textColor=self.style_manager.get_color('secondary'),
+                        spaceBefore=16,
+                        spaceAfter=8,
+                        fontSize=14,
+                        fontName='Helvetica-Bold'
+                    )
+
+                    # Add section header with anchor
+                    section_with_anchor = f'<a name="{section_anchor}"/>{section_header}'
+                    content.append(Paragraph(section_with_anchor, section_header_style))
+
+                    # Render section content with special handling for coverage categories
+                    content.extend(self._render_section_content_with_anchors(section_data, section_num, level + 1))
+
+                    # Add spacing between sections
+                    content.append(Spacer(1, 12))
+                else:
+                    # Fallback for sections without titles
+                    content.extend(self._render_as_section(section_key, section_data, level + 1))
+            else:
+                # Fallback for non-dict section data
+                content.extend(self._render_as_field(section_key, section_data, level + 1))
+
+        return content
+
+    def _render_section_content_with_anchors(self, section_data: Dict, section_num: str, level: int) -> List:
+        """Render section content with anchors for coverage categories."""
+        content = []
+
+        for key, value in self._ordered_items(section_data):
+            # Skip excluded keys
+            if key.lower() in self.excluded_keys:
+                continue
+
+            # Special handling for coverage_categories
+            if key == 'coverage_categories' and isinstance(value, dict):
+                # Add coverage categories header
+                coverage_header = "Coverage Analysis"
+                coverage_header_style = ParagraphStyle(
+                    f'CoverageHeader{level}',
+                    parent=self.style_manager.styles['subheading'],
+                    textColor=self.style_manager.get_color('accent'),
+                    spaceBefore=10,
+                    spaceAfter=6,
+                    fontSize=12,
+                    fontName='Helvetica-Bold'
+                )
+                content.append(Paragraph(coverage_header, coverage_header_style))
+
+                # Render each coverage category with anchor
+                for category_key, category_data in value.items():
+                    if isinstance(category_data, dict) and 'checkpoint_count' in category_data:
+                        checkpoint_count = category_data['checkpoint_count']
+                        category_name = category_key.replace('_', ' ').title()
+                        category_title = f"{category_name}: {checkpoint_count} checkpoints"
+                        category_anchor = self._create_anchor(f"coverage_{section_num}_{category_key}")
+
+                        # Create category style
+                        category_style = ParagraphStyle(
+                            f'CoverageCategory{level}',
+                            parent=self.style_manager.styles['normal'],
+                            textColor=self.style_manager.get_color('secondary'),
+                            spaceBefore=6,
+                            spaceAfter=4,
+                            leftIndent=20,
+                            fontName='Helvetica-Bold'
+                        )
+
+                        # Add category with anchor
+                        category_with_anchor = f'<a name="{category_anchor}"/>{category_title}'
+                        content.append(Paragraph(category_with_anchor, category_style))
+
+                        # Render category content if there's more than just checkpoint_count
+                        if len(category_data) > 1:
+                            content.extend(self._render_object_as_document(category_data, level + 1))
+                    else:
+                        # Fallback for categories without checkpoint_count
+                        content.extend(self._render_as_field(category_key, category_data, level + 1))
+            else:
+                # Regular content rendering
+                if self._is_header_key(key):
+                    content.extend(self._render_as_header(key, value, level))
+                elif isinstance(value, dict):
+                    content.extend(self._render_as_section(key, value, level))
+                elif isinstance(value, str) and self._is_markdown_content(value):
+                    content.extend(self._render_as_paragraph(key, value, level))
+                elif self._is_list_content(value):
+                    content.extend(self._render_as_list(key, value, level))
+                elif isinstance(value, str) and len(value) > 100:
+                    content.extend(self._render_as_paragraph(key, value, level))
+                else:
+                    content.extend(self._render_as_field(key, value, level))
 
         return content
 
@@ -694,8 +838,12 @@ class JSONToPDFConverter:
             spaceAfter=8
         )
 
-        # Add paragraph (temporarily without anchor to avoid issues)
-        content.append(Paragraph(header_text, header_style))
+        # Add paragraph with anchor for TOC navigation
+        if self._should_include_in_toc(key, level):
+            header_with_anchor = f'<a name="{anchor}"/>{header_text}'
+            content.append(Paragraph(header_with_anchor, header_style))
+        else:
+            content.append(Paragraph(header_text, header_style))
 
         # Render the value content
         if isinstance(value, str):
@@ -741,8 +889,12 @@ class JSONToPDFConverter:
             spaceAfter=8
         )
 
-        # Add paragraph (temporarily without anchor to avoid issues)
-        content.append(Paragraph(header_text, header_style))
+        # Add paragraph with anchor for TOC navigation
+        if self._should_include_in_toc(key, level):
+            header_with_anchor = f'<a name="{anchor}"/>{header_text}'
+            content.append(Paragraph(header_with_anchor, header_style))
+        else:
+            content.append(Paragraph(header_text, header_style))
 
         # Render the content
         if isinstance(value, dict):
@@ -781,8 +933,12 @@ class JSONToPDFConverter:
             fontSize=14 if level < 2 else 12
         )
 
-        # Add paragraph (temporarily without anchor to avoid issues)
-        content.append(Paragraph(section_text, header_style))
+        # Add paragraph with anchor for TOC navigation
+        if self._should_include_in_toc(key, level):
+            section_with_anchor = f'<a name="{anchor}"/>{section_text}'
+            content.append(Paragraph(section_with_anchor, header_style))
+        else:
+            content.append(Paragraph(section_text, header_style))
         content.extend(self._render_object_as_document(value, level + 1))
         content.append(Spacer(1, 8))
 
