@@ -46,7 +46,7 @@ class JSONToPDFConverter:
         self.validator = JSONValidator()
         self.mapping_extractor = MappingDataExtractor()
         # Keys to exclude from rendering (case-insensitive)
-        default_excluded = {"checkpoint_details", "_mapping_metadata", "_extracted_sections_info"}
+        default_excluded = {"checkpoint_details", "_mapping_metadata", "_extracted_sections_info", "combined_supporting_evidence"}
         self.excluded_keys = set(k.lower() for k in (exclude_keys or [])) or default_excluded
         # Keys that should never be treated as headers even if they contain header-like words
         self.non_header_keys = {
@@ -84,10 +84,16 @@ class JSONToPDFConverter:
             if title is None:
                 # Create a more descriptive title based on detected format
                 detected_format = self.mapping_extractor.get_detected_format()
+                # Clean up filename: remove extension and shorten if too long
+                filename = os.path.basename(input_file)
+                clean_name = os.path.splitext(filename)[0]  # Remove extension
+                if len(clean_name) > 50:  # Shorten very long names
+                    clean_name = clean_name[:47] + "..."
+                
                 if detected_format in [DataFormat.MAPPING_JSON, DataFormat.TRANSFORMED_MAPPING]:
-                    title = f"Gap Analysis Report: {os.path.basename(input_file)}"
+                    title = f"Gap Analysis Report: {clean_name}"
                 else:
-                    title = f"JSON Document: {os.path.basename(input_file)}"
+                    title = f"JSON Document: {clean_name}"
 
             self._generate_pdf(normalized_data, normalized_analysis, output_file, title, input_file)
 
@@ -171,11 +177,6 @@ class JSONToPDFConverter:
             try:
                 # Add title
                 story.append(Paragraph(title, self.style_manager.get_style('title')))
-                story.append(Spacer(1, 12))
-
-                # Add metadata
-                metadata = self._create_metadata(analysis, source_file, data)
-                story.extend(metadata)
                 story.append(Spacer(1, 20))
 
                 # First pass: collect TOC entries by rendering content
@@ -218,70 +219,7 @@ class JSONToPDFConverter:
         except Exception as e:
             raise PDFGenerationError(f"Unexpected error during PDF generation: {e}")
     
-    def _create_metadata(self, analysis: Dict, source_file: str = None, data: Dict = None) -> List:
-        """Create metadata section for the document."""
-        metadata = []
-
-        # Document info
-        info_data = [
-            ['Generated:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-            ['Data Type:', analysis.get('type', 'Unknown').title()],
-        ]
-
-        if source_file:
-            info_data.append(['Source File:', os.path.basename(source_file)])
-
-        # Add detected format information
-        detected_format = self.mapping_extractor.get_detected_format()
-        if detected_format != DataFormat.UNKNOWN:
-            format_map = {
-                DataFormat.MAPPING_JSON: "Mapping JSON",
-                DataFormat.TEST_JSON: "Test JSON",
-                DataFormat.TRANSFORMED_MAPPING: "Transformed Mapping JSON"
-            }
-            format_name = format_map.get(detected_format, "Unknown")
-            info_data.append(['Format:', format_name])
-
-        # Add mapping-specific metadata if available
-        if data and '_mapping_metadata' in data:
-            mapping_meta = data['_mapping_metadata']
-            if mapping_meta.get('job_id'):
-                info_data.append(['Job ID:', mapping_meta['job_id']])
-            if mapping_meta.get('name'):
-                info_data.append(['Job Name:', mapping_meta['name']])
-            if mapping_meta.get('status'):
-                info_data.append(['Status:', mapping_meta['status'].title()])
-            if mapping_meta.get('filename'):
-                filenames = mapping_meta['filename']
-                if isinstance(filenames, list):
-                    info_data.append(['Source Documents:', ', '.join(filenames)])
-                else:
-                    info_data.append(['Source Document:', str(filenames)])
-
-        # Add structure info
-        if analysis.get('type') == 'object':
-            info_data.append(['Keys Count:', str(analysis.get('key_count', 0))])
-        elif analysis.get('type') == 'array':
-            info_data.append(['Array Length:', str(analysis.get('length', 0))])
-            if analysis.get('homogeneous'):
-                item_types = analysis.get('item_types', [])
-                info_data.append(['Item Type:', ', '.join(item_types)])
-
-        # Create table
-        table = Table(info_data, colWidths=[1.5*inch, 4*inch])
-        table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (-1, -1), PDFStyleConfig.FONT_FAMILY_NORMAL),
-            ('FONTSIZE', (0, 0), (-1, -1), PDFStyleConfig.FONT_SIZE_SMALL),
-            ('TEXTCOLOR', (0, 0), (0, -1), self.style_manager.get_color('secondary')),
-            ('TEXTCOLOR', (1, 0), (1, -1), self.style_manager.get_color('primary')),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('GRID', (0, 0), (-1, -1), 0.5, self.style_manager.get_color('border')),
-            ('BACKGROUND', (0, 0), (-1, -1), self.style_manager.get_color('background')),
-        ]))
-
-        metadata.append(table)
-        return metadata
+    # _create_metadata method removed - metadata table no longer displayed per manager's request
 
     def _create_table_of_contents(self) -> List:
         """Create a table of contents with clickable links."""
@@ -610,23 +548,26 @@ class JSONToPDFConverter:
                 content.append(Paragraph(header_with_anchor, section_header_style))
 
             # Special handling for important analysis fields
-            if key in ['combined_supporting_evidence', 'combined_gap_analysis', 'strategic_recommendations']:
-                # Create a prominent header for these critical fields
-                field_title = key.replace('_', ' ').title()
-                field_header_style = ParagraphStyle(
-                    f'ImportantField{level}',
-                    parent=self.style_manager.styles['subheading'],
-                    textColor=self.style_manager.get_color('primary'),
-                    spaceBefore=12,
-                    spaceAfter=6,
-                    fontSize=16,
-                    fontName='Helvetica-Bold'
-                )
-                content.append(Paragraph(field_title, field_header_style))
-
-                # Render the content with proper formatting
+            if key in ['combined_gap_analysis', 'strategic_recommendations']:
+                # Render the content directly without redundant header for gap analysis
                 if isinstance(value, str) and value.strip():
-                    content.extend(self._render_as_paragraph("", value, level))
+                    if key == 'combined_gap_analysis':
+                        # No header for gap analysis - content already has title
+                        content.extend(self._render_as_paragraph("", value, level))
+                    else:
+                        # Keep header for other fields like strategic_recommendations
+                        field_title = key.replace('_', ' ').title()
+                        field_header_style = ParagraphStyle(
+                            f'ImportantField{level}',
+                            parent=self.style_manager.styles['subheading'],
+                            textColor=self.style_manager.get_color('primary'),
+                            spaceBefore=12,
+                            spaceAfter=6,
+                            fontSize=16,
+                            fontName='Helvetica-Bold'
+                        )
+                        content.append(Paragraph(field_title, field_header_style))
+                        content.extend(self._render_as_paragraph("", value, level))
                 else:
                     content.extend(self._render_as_field("", value, level))
 
@@ -954,26 +895,29 @@ class JSONToPDFConverter:
                     content.extend(self._render_coverage_category_content(category_data, level + 1))
 
         # Render key gap analysis fields with special formatting
-        priority_fields = ['combined_gap_analysis', 'combined_supporting_evidence', 'strategic_recommendations']
+        priority_fields = ['combined_gap_analysis', 'strategic_recommendations']
 
         for field_key in priority_fields:
             if field_key in gap_data and isinstance(gap_data[field_key], str) and gap_data[field_key].strip():
-                # Create a prominent header for these important fields
-                field_title = field_key.replace('_', ' ').title()
-                field_header_style = ParagraphStyle(
-                    f'FieldHeader{level}',
-                    parent=self.style_manager.styles['normal'],
-                    textColor=self.style_manager.get_color('primary'),
-                    spaceBefore=8,
-                    spaceAfter=4,
-                    leftIndent=30,
-                    fontSize=14,
-                    fontName='Helvetica-Bold'
-                )
-                content.append(Paragraph(field_title, field_header_style))
-
-                # Render the content
-                content.extend(self._render_as_paragraph("", gap_data[field_key], level + 1))
+                # Render content directly without redundant header for gap analysis
+                if field_key == 'combined_gap_analysis':
+                    # No header for gap analysis - content already has title
+                    content.extend(self._render_as_paragraph("", gap_data[field_key], level + 1))
+                else:
+                    # Keep header for other fields like strategic_recommendations
+                    field_title = field_key.replace('_', ' ').title()
+                    field_header_style = ParagraphStyle(
+                        f'FieldHeader{level}',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('primary'),
+                        spaceBefore=8,
+                        spaceAfter=4,
+                        leftIndent=30,
+                        fontSize=14,
+                        fontName='Helvetica-Bold'
+                    )
+                    content.append(Paragraph(field_title, field_header_style))
+                    content.extend(self._render_as_paragraph("", gap_data[field_key], level + 1))
 
         # Render other gap analysis content (summary, etc.)
         for key, value in gap_data.items():
@@ -993,48 +937,73 @@ class JSONToPDFConverter:
         content = []
 
         # Priority fields that should be prominently displayed
-        priority_fields = ['combined_gap_analysis', 'combined_supporting_evidence']
+        priority_fields = ['combined_gap_analysis']
 
         for field_key in priority_fields:
             if field_key in category_data and isinstance(category_data[field_key], str):
                 field_value = category_data[field_key].strip()
                 if field_value and field_value != "No checkpoints in this category":
-                    # Create a prominent header for these important fields
-                    field_title = field_key.replace('_', ' ').title()
-                    field_header_style = ParagraphStyle(
-                        f'CategoryFieldHeader{level}',
-                        parent=self.style_manager.styles['normal'],
-                        textColor=self.style_manager.get_color('primary'),
-                        spaceBefore=6,
-                        spaceAfter=3,
-                        leftIndent=40,
-                        fontSize=12,
-                        fontName='Helvetica-Bold'
-                    )
-                    content.append(Paragraph(field_title, field_header_style))
-
-                    # Render the content with proper markdown formatting
-                    if self._is_markdown_content(field_value):
-                        # Use markdown rendering for properly formatted content
-                        markdown_content = self._render_markdown_content("", field_value, level + 1)
-                        # Adjust indentation for markdown content
-                        for item in markdown_content:
-                            if hasattr(item, 'style') and hasattr(item.style, 'leftIndent'):
-                                item.style.leftIndent += 40  # Add extra indentation
-                        content.extend(markdown_content)
+                    # Render content directly without redundant header for gap analysis
+                    if field_key == 'combined_gap_analysis':
+                        # No header for gap analysis - content already has title
+                        if self._is_markdown_content(field_value):
+                            # Use markdown rendering for properly formatted content
+                            markdown_content = self._render_markdown_content("", field_value, level + 1)
+                            # Adjust indentation for markdown content
+                            for item in markdown_content:
+                                if hasattr(item, 'style') and hasattr(item.style, 'leftIndent'):
+                                    item.style.leftIndent += 40  # Add extra indentation
+                            content.extend(markdown_content)
+                        else:
+                            # Fallback to simple paragraph for non-markdown content
+                            field_content_style = ParagraphStyle(
+                                f'CategoryFieldContent{level}',
+                                parent=self.style_manager.styles['normal'],
+                                textColor=self.style_manager.get_color('text'),
+                                spaceBefore=2,
+                                spaceAfter=4,
+                                leftIndent=50,
+                                fontSize=8,
+                                leading=10
+                            )
+                            content.append(Paragraph(field_value, field_content_style))
                     else:
-                        # Fallback to simple paragraph for non-markdown content
-                        field_content_style = ParagraphStyle(
-                            f'CategoryFieldContent{level}',
+                        # Keep header for other fields
+                        field_title = field_key.replace('_', ' ').title()
+                        field_header_style = ParagraphStyle(
+                            f'CategoryFieldHeader{level}',
                             parent=self.style_manager.styles['normal'],
-                            textColor=self.style_manager.get_color('text'),
-                            spaceBefore=2,
-                            spaceAfter=4,
-                            leftIndent=50,
-                            fontSize=8,
-                            leading=10
+                            textColor=self.style_manager.get_color('primary'),
+                            spaceBefore=6,
+                            spaceAfter=3,
+                            leftIndent=40,
+                            fontSize=12,
+                            fontName='Helvetica-Bold'
                         )
-                        content.append(Paragraph(field_value, field_content_style))
+                        content.append(Paragraph(field_title, field_header_style))
+
+                        # Render the content with proper markdown formatting
+                        if self._is_markdown_content(field_value):
+                            # Use markdown rendering for properly formatted content
+                            markdown_content = self._render_markdown_content("", field_value, level + 1)
+                            # Adjust indentation for markdown content
+                            for item in markdown_content:
+                                if hasattr(item, 'style') and hasattr(item.style, 'leftIndent'):
+                                    item.style.leftIndent += 40  # Add extra indentation
+                            content.extend(markdown_content)
+                        else:
+                            # Fallback to simple paragraph for non-markdown content
+                            field_content_style = ParagraphStyle(
+                                f'CategoryFieldContent{level}',
+                                parent=self.style_manager.styles['normal'],
+                                textColor=self.style_manager.get_color('text'),
+                                spaceBefore=2,
+                                spaceAfter=4,
+                                leftIndent=50,
+                                fontSize=8,
+                                leading=10
+                            )
+                            content.append(Paragraph(field_value, field_content_style))
 
         # Render other fields in the category (excluding checkpoint_count and priority fields)
         for key, value in category_data.items():

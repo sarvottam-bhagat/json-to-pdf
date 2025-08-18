@@ -52,7 +52,7 @@ def main():
         
         # Generate PDF
         print(f"Generating PDF...")
-        generator.convert_file(input_file, output_file, title="Gap Analysis Report - Mapping JSON")
+        generator.convert_file(input_file, output_file)  # Let it auto-generate title from filename
         print(f"PDF generated successfully: {output_file}")
         
         # Check file size

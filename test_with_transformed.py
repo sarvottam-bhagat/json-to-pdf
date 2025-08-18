@@ -13,7 +13,7 @@ def main():
     
     # Generate PDF from the transformed JSON file
     input_file = "sample_data/First Sample Job Test 2_transformed_2025-08-18T09-39-44-682Z.json"
-    output_file = "output/transformed_mapping1.pdf"
+    output_file = "output/transformed_mapping6.pdf"
     
     # Ensure output directory exists
     os.makedirs("output", exist_ok=True)
@@ -65,7 +65,7 @@ def main():
         
         # Generate PDF
         print(f"Generating PDF...")
-        generator.convert_file(input_file, output_file, title="Gap Analysis Report - Transformed JSON")
+        generator.convert_file(input_file, output_file)  # Let it auto-generate title from filename
         print(f"PDF generated successfully: {output_file}")
         
         # Check file size
@@ -90,7 +90,6 @@ def test_both_formats():
     
     # Test files
     files = [
-        ("sample_data/mapping.json", "Mapping JSON"),
         ("sample_data/First Sample Job Test 2_transformed_2025-08-18T09-39-44-682Z.json", "Transformed JSON")
     ]
     
