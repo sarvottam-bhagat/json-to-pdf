@@ -22,6 +22,7 @@ import re
 
 from json_parser import JSONParser, JSONDataType, JSONValidator, format_value_for_display
 from pdf_styles import PDFStyleManager, PDFStyleConfig, ColorScheme
+from mapping_extractor import MappingDataExtractor, DataFormat
 
 
 class PDFGenerationError(Exception):
@@ -35,7 +36,7 @@ class JSONToPDFConverter:
     def __init__(self, color_scheme: ColorScheme = ColorScheme.DEFAULT, exclude_keys: List[str] = None):
         """
         Initialize the converter with specified styling.
-        
+
         Args:
             color_scheme: Color scheme to use for the PDF
             exclude_keys: Optional list of JSON keys to skip when rendering
@@ -43,8 +44,9 @@ class JSONToPDFConverter:
         self.style_manager = PDFStyleManager(color_scheme)
         self.parser = JSONParser()
         self.validator = JSONValidator()
+        self.mapping_extractor = MappingDataExtractor()
         # Keys to exclude from rendering (case-insensitive)
-        default_excluded = {"checkpoint_details"}
+        default_excluded = {"checkpoint_details", "_mapping_metadata", "_extracted_sections_info"}
         self.excluded_keys = set(k.lower() for k in (exclude_keys or [])) or default_excluded
         # Keys that should never be treated as headers even if they contain header-like words
         self.non_header_keys = {
@@ -60,45 +62,68 @@ class JSONToPDFConverter:
     def convert_file(self, input_file: str, output_file: str, title: str = None) -> None:
         """
         Convert a JSON file to PDF.
-        
+
         Args:
             input_file: Path to input JSON file
             output_file: Path to output PDF file
             title: Optional title for the document
-            
+
         Raises:
             PDFGenerationError: If conversion fails
         """
         try:
-            data, analysis = self.parser.parse_file(input_file)
-            
+            # First parse the raw data
+            raw_data, analysis = self.parser.parse_file(input_file)
+
+            # Extract and normalize data using mapping extractor
+            normalized_data = self.mapping_extractor.extract_from_data(raw_data)
+
+            # Re-analyze the normalized data structure
+            normalized_analysis = self.validator.analyze_structure(normalized_data)
+
             if title is None:
-                title = f"JSON Document: {os.path.basename(input_file)}"
-                
-            self._generate_pdf(data, analysis, output_file, title, input_file)
-            
+                # Create a more descriptive title based on detected format
+                detected_format = self.mapping_extractor.get_detected_format()
+                if detected_format == DataFormat.MAPPING_JSON:
+                    title = f"Gap Analysis Report: {os.path.basename(input_file)}"
+                else:
+                    title = f"JSON Document: {os.path.basename(input_file)}"
+
+            self._generate_pdf(normalized_data, normalized_analysis, output_file, title, input_file)
+
         except Exception as e:
             raise PDFGenerationError(f"Failed to convert file {input_file}: {e}")
     
     def convert_data(self, data: Any, output_file: str, title: str = "JSON Document") -> None:
         """
         Convert JSON data to PDF.
-        
+
         Args:
             data: JSON data to convert
             output_file: Path to output PDF file
             title: Title for the document
-            
+
         Raises:
             PDFGenerationError: If conversion fails
         """
         try:
             if not self.parser.validate_data(data):
                 raise PDFGenerationError("Data is not JSON-serializable")
-                
-            analysis = self.validator.analyze_structure(data)
-            self._generate_pdf(data, analysis, output_file, title)
-            
+
+            # Extract and normalize data using mapping extractor
+            normalized_data = self.mapping_extractor.extract_from_data(data)
+
+            # Re-analyze the normalized data structure
+            normalized_analysis = self.validator.analyze_structure(normalized_data)
+
+            # Update title based on detected format if it's the default
+            if title == "JSON Document":
+                detected_format = self.mapping_extractor.get_detected_format()
+                if detected_format == DataFormat.MAPPING_JSON:
+                    title = "Gap Analysis Report"
+
+            self._generate_pdf(normalized_data, normalized_analysis, output_file, title)
+
         except Exception as e:
             raise PDFGenerationError(f"Failed to convert data: {e}")
     
@@ -149,13 +174,13 @@ class JSONToPDFConverter:
                 story.append(Spacer(1, 12))
 
                 # Add metadata
-                metadata = self._create_metadata(analysis, source_file)
+                metadata = self._create_metadata(analysis, source_file, data)
                 story.extend(metadata)
                 story.append(Spacer(1, 20))
 
                 # First pass: collect TOC entries by rendering content
                 self.toc_entries = []
-                content = self._render_json_content(data, 0)
+                content = self._render_json_content(data, 0, data)
 
                 # Add Table of Contents if we have entries
                 if self.toc_entries:
@@ -193,19 +218,41 @@ class JSONToPDFConverter:
         except Exception as e:
             raise PDFGenerationError(f"Unexpected error during PDF generation: {e}")
     
-    def _create_metadata(self, analysis: Dict, source_file: str = None) -> List:
+    def _create_metadata(self, analysis: Dict, source_file: str = None, data: Dict = None) -> List:
         """Create metadata section for the document."""
         metadata = []
-        
+
         # Document info
         info_data = [
             ['Generated:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
             ['Data Type:', analysis.get('type', 'Unknown').title()],
         ]
-        
+
         if source_file:
             info_data.append(['Source File:', os.path.basename(source_file)])
-        
+
+        # Add detected format information
+        detected_format = self.mapping_extractor.get_detected_format()
+        if detected_format != DataFormat.UNKNOWN:
+            format_name = "Mapping JSON" if detected_format == DataFormat.MAPPING_JSON else "Test JSON"
+            info_data.append(['Format:', format_name])
+
+        # Add mapping-specific metadata if available
+        if data and '_mapping_metadata' in data:
+            mapping_meta = data['_mapping_metadata']
+            if mapping_meta.get('job_id'):
+                info_data.append(['Job ID:', mapping_meta['job_id']])
+            if mapping_meta.get('name'):
+                info_data.append(['Job Name:', mapping_meta['name']])
+            if mapping_meta.get('status'):
+                info_data.append(['Status:', mapping_meta['status'].title()])
+            if mapping_meta.get('filename'):
+                filenames = mapping_meta['filename']
+                if isinstance(filenames, list):
+                    info_data.append(['Source Documents:', ', '.join(filenames)])
+                else:
+                    info_data.append(['Source Document:', str(filenames)])
+
         # Add structure info
         if analysis.get('type') == 'object':
             info_data.append(['Keys Count:', str(analysis.get('key_count', 0))])
@@ -214,7 +261,7 @@ class JSONToPDFConverter:
             if analysis.get('homogeneous'):
                 item_types = analysis.get('item_types', [])
                 info_data.append(['Item Type:', ', '.join(item_types)])
-        
+
         # Create table
         table = Table(info_data, colWidths=[1.5*inch, 4*inch])
         table.setStyle(TableStyle([
@@ -227,7 +274,7 @@ class JSONToPDFConverter:
             ('GRID', (0, 0), (-1, -1), 0.5, self.style_manager.get_color('border')),
             ('BACKGROUND', (0, 0), (-1, -1), self.style_manager.get_color('background')),
         ]))
-        
+
         metadata.append(table)
         return metadata
 
@@ -306,9 +353,47 @@ class JSONToPDFConverter:
 
         return False
 
-    def _extract_section_toc_entries(self, section_analyses: Dict, base_level: int) -> None:
+    def _extract_section_toc_entries(self, section_analyses: Dict, base_level: int, data: Dict = None) -> None:
         """Extract TOC entries from section_analyses structure."""
-        for section_key, section_data in section_analyses.items():
+        # Add module information if available from mapping.json
+        if data and '_extracted_sections_info' in data:
+            sections_info = data['_extracted_sections_info']
+            # Group sections by module
+            modules = {}
+            for section_info in sections_info:
+                module_label = section_info.get('module_label', 'Unknown Module')
+                if module_label not in modules:
+                    modules[module_label] = []
+                modules[module_label].append(section_info)
+
+            # Add module headers if we have multiple modules
+            if len(modules) > 1:
+                for module_label, module_sections in modules.items():
+                    module_anchor = self._create_anchor(f"module_{module_label}")
+                    self.toc_entries.append({
+                        'title': f"Module: {module_label}",
+                        'anchor': module_anchor,
+                        'level': 0  # Module level
+                    })
+
+        # Sort sections by section number for proper ordering in TOC
+        def sort_key(item):
+            section_key, section_data = item
+            if isinstance(section_data, dict):
+                section_num = section_data.get('section', section_key)
+                # Parse section number for proper sorting (e.g., "1.1", "1.2", "1.10")
+                try:
+                    # Split by dots and convert to integers for proper numerical sorting
+                    parts = [int(x) for x in str(section_num).split('.')]
+                    return parts
+                except (ValueError, AttributeError):
+                    # Fallback to string sorting if parsing fails
+                    return [float('inf'), str(section_num)]
+            return [float('inf'), section_key]
+
+        sorted_sections = sorted(section_analyses.items(), key=sort_key)
+
+        for section_key, section_data in sorted_sections:
             if isinstance(section_data, dict):
                 # Extract section number and title
                 section_num = section_data.get('section', section_key)
@@ -343,13 +428,14 @@ class JSONToPDFConverter:
 
 
     
-    def _render_json_content(self, data: Any, level: int) -> List:
+    def _render_json_content(self, data: Any, level: int, full_data: Any = None) -> List:
         """
         Render JSON content recursively with intelligent document formatting.
 
         Args:
             data: JSON data to render
             level: Current nesting level
+            full_data: Full data context for TOC generation
 
         Returns:
             List of flowable elements
@@ -357,8 +443,12 @@ class JSONToPDFConverter:
         content = []
         data_type = self.validator.get_data_type(data)
 
+        # Use data as full_data if not provided (for root level)
+        if full_data is None:
+            full_data = data
+
         if data_type == JSONDataType.OBJECT:
-            content.extend(self._render_object_as_document(data, level))
+            content.extend(self._render_object_as_document(data, level, full_data))
         elif data_type == JSONDataType.ARRAY:
             content.extend(self._render_array_as_document(data, level))
         else:
@@ -473,21 +563,36 @@ class JSONToPDFConverter:
             spaceAfter=4
         )
 
-    def _render_object_as_document(self, obj: Dict, level: int) -> List:
+    def _render_object_as_document(self, obj: Dict, level: int, full_data: Any = None) -> List:
         """Render JSON object as a document with intelligent formatting."""
         content = []
         section_counter = 1
+
+        # Check if we have modules_structure (new format) to prioritize it over section_analyses
+        has_modules_structure = 'modules_structure' in obj and isinstance(obj['modules_structure'], dict)
 
         for key, value in self._ordered_items(obj):
             # Skip excluded keys entirely
             if key.lower() in self.excluded_keys:
                 continue
 
-            # Special handling for section analyses structure
-            if key == 'section_analyses' and isinstance(value, dict):
-                self._extract_section_toc_entries(value, level + 1)
+            # Special handling for modules structure (new hierarchical format)
+            if key == 'modules_structure' and isinstance(value, dict):
+                self._extract_modules_toc_entries(value, level + 1, full_data)
+                # Render modules structure with proper hierarchy
+                content.extend(self._render_modules_structure(key, value, level))
+                continue
+
+            # Special handling for section analyses structure (legacy format)
+            # Skip if we have modules_structure to avoid duplication
+            elif key == 'section_analyses' and isinstance(value, dict) and not has_modules_structure:
+                self._extract_section_toc_entries(value, level + 1, full_data)
                 # Render section analyses with special handling for individual sections
                 content.extend(self._render_section_analyses(key, value, level))
+                continue
+
+            # Skip section_analyses if we have modules_structure (to avoid duplication)
+            elif key == 'section_analyses' and has_modules_structure:
                 continue
 
             # Add TOC entry for sections that should be included (only for main sections)
@@ -513,8 +618,29 @@ class JSONToPDFConverter:
                 header_with_anchor = f'<a name="{anchor}"/>{header_text}'
                 content.append(Paragraph(header_with_anchor, section_header_style))
 
+            # Special handling for important analysis fields
+            if key in ['combined_supporting_evidence', 'combined_gap_analysis', 'strategic_recommendations']:
+                # Create a prominent header for these critical fields
+                field_title = key.replace('_', ' ').title()
+                field_header_style = ParagraphStyle(
+                    f'ImportantField{level}',
+                    parent=self.style_manager.styles['subheading'],
+                    textColor=self.style_manager.get_color('primary'),
+                    spaceBefore=12,
+                    spaceAfter=6,
+                    fontSize=16,
+                    fontName='Helvetica-Bold'
+                )
+                content.append(Paragraph(field_title, field_header_style))
+
+                # Render the content with proper formatting
+                if isinstance(value, str) and value.strip():
+                    content.extend(self._render_as_paragraph("", value, level))
+                else:
+                    content.extend(self._render_as_field("", value, level))
+
             # Determine if this should be a header, subheader, or content
-            if self._is_title_key(key):
+            elif self._is_title_key(key):
                 content.extend(self._render_as_title(key, value, level))
             elif self._is_main_section(key, value):
                 content.extend(self._render_as_numbered_section(key, value, section_counter, level))
@@ -551,8 +677,25 @@ class JSONToPDFConverter:
         )
         content.append(Paragraph(header_text, header_style))
 
-        # Render each individual section
-        for section_key, section_data in section_analyses.items():
+        # Sort sections by section number for proper ordering
+        def sort_key(item):
+            section_key, section_data = item
+            if isinstance(section_data, dict):
+                section_num = section_data.get('section', section_key)
+                # Parse section number for proper sorting (e.g., "1.1", "1.2", "1.10")
+                try:
+                    # Split by dots and convert to integers for proper numerical sorting
+                    parts = [int(x) for x in str(section_num).split('.')]
+                    return parts
+                except (ValueError, AttributeError):
+                    # Fallback to string sorting if parsing fails
+                    return [float('inf'), str(section_num)]
+            return [float('inf'), section_key]
+
+        sorted_sections = sorted(section_analyses.items(), key=sort_key)
+
+        # Render each individual section in sorted order
+        for section_key, section_data in sorted_sections:
             if isinstance(section_data, dict):
                 # Extract section number and title
                 section_num = section_data.get('section', section_key)
@@ -632,6 +775,7 @@ class JSONToPDFConverter:
                             spaceBefore=6,
                             spaceAfter=4,
                             leftIndent=20,
+                            fontSize=14,
                             fontName='Helvetica-Bold'
                         )
 
@@ -661,6 +805,372 @@ class JSONToPDFConverter:
                     content.extend(self._render_as_field(key, value, level))
 
         return content
+
+    def _render_modules_structure(self, key: str, modules_structure: Dict, level: int) -> List:
+        """Render modules structure with proper hierarchy: Module -> Section -> Coverage Analysis."""
+        content = []
+
+        # Add modules structure header
+        header_text = "Module Analysis"
+        header_style = ParagraphStyle(
+            f'ModulesHeader{level}',
+            parent=self.style_manager.styles['heading'],
+            textColor=self.style_manager.get_color('primary'),
+            spaceBefore=12,
+            spaceAfter=8,
+            fontSize=16,
+            fontName='Helvetica-Bold'
+        )
+        content.append(Paragraph(header_text, header_style))
+
+        # Sort modules by numerical order (M1, M2, M3, etc.)
+        def module_sort_key(item):
+            module_key = item[0]
+            # Extract number from module key (e.g., "M1" -> 1, "M3" -> 3)
+            try:
+                if module_key.startswith('M'):
+                    return int(module_key[1:])
+                else:
+                    return float('inf')  # Put non-standard keys at the end
+            except (ValueError, IndexError):
+                return float('inf')
+
+        sorted_modules = sorted(modules_structure.items(), key=module_sort_key)
+
+        for module_key, module_data in sorted_modules:
+            if not isinstance(module_data, dict):
+                continue
+
+            module_label = module_data.get('module_label', module_key)
+            sections = module_data.get('sections', {})
+
+            # Add module header
+            module_header = f"{module_label}"
+            module_anchor = self._create_anchor(f"module_{module_key}")
+            module_style = ParagraphStyle(
+                f'ModuleHeader{level}',
+                parent=self.style_manager.styles['heading'],
+                textColor=self.style_manager.get_color('primary'),
+                spaceBefore=16,
+                spaceAfter=8,
+                fontSize=14,
+                fontName='Helvetica-Bold'
+            )
+            module_with_anchor = f'<a name="{module_anchor}"/>{module_header}'
+            content.append(Paragraph(module_with_anchor, module_style))
+
+            # Render sections within this module
+            content.extend(self._render_module_sections(sections, module_key, level + 1))
+
+        return content
+
+    def _render_module_sections(self, sections: Dict, module_key: str, level: int) -> List:
+        """Render sections within a module."""
+        content = []
+
+        # Sort sections by section key for consistent ordering
+        sorted_sections = sorted(sections.items(), key=lambda x: self._parse_section_number(x[0]))
+
+        for section_key, section_items in sorted_sections:
+            if not isinstance(section_items, list):
+                continue
+
+            # Add section header
+            section_header = f"Section {section_key}"
+            section_anchor = self._create_anchor(f"section_{module_key}_{section_key}")
+            section_style = ParagraphStyle(
+                f'SectionHeader{level}',
+                parent=self.style_manager.styles['subheading'],
+                textColor=self.style_manager.get_color('secondary'),
+                spaceBefore=12,
+                spaceAfter=6,
+                fontSize=12,
+                fontName='Helvetica-Bold'
+            )
+            section_with_anchor = f'<a name="{section_anchor}"/>{section_header}'
+            content.append(Paragraph(section_with_anchor, section_style))
+
+            # Render each item in this section
+            for item in section_items:
+                if isinstance(item, dict):
+                    section_id = item.get('section_id', '')
+                    section_title = item.get('section_title', '')
+                    gap_data = item.get('gap_data', {})
+
+                    # Add subsection header
+                    subsection_title = f"{section_id}: {section_title}" if section_title else section_id
+                    subsection_anchor = self._create_anchor(f"subsection_{module_key}_{section_key}_{section_id}")
+                    subsection_style = ParagraphStyle(
+                        f'SubsectionHeader{level}',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('text'),
+                        spaceBefore=8,
+                        spaceAfter=4,
+                        leftIndent=20,
+                        fontName='Helvetica-Bold'
+                    )
+                    subsection_with_anchor = f'<a name="{subsection_anchor}"/>{subsection_title}'
+                    content.append(Paragraph(subsection_with_anchor, subsection_style))
+
+                    # Render coverage analysis for this subsection
+                    if gap_data:
+                        content.extend(self._render_subsection_coverage(gap_data, section_id, level + 1))
+
+        return content
+
+    def _render_subsection_coverage(self, gap_data: Dict, section_id: str, level: int) -> List:
+        """Render coverage analysis for a subsection."""
+        content = []
+
+        # Add coverage analysis header
+        coverage_header = "Coverage Analysis"
+        coverage_style = ParagraphStyle(
+            f'CoverageHeader{level}',
+            parent=self.style_manager.styles['normal'],
+            textColor=self.style_manager.get_color('accent'),
+            spaceBefore=6,
+            spaceAfter=4,
+            leftIndent=20,
+            fontSize=10,
+            fontName='Helvetica-Bold'
+        )
+        content.append(Paragraph(coverage_header, coverage_style))
+
+        # Render coverage categories if available
+        coverage_categories = gap_data.get('coverage_categories', {})
+        if coverage_categories:
+            for category_key, category_data in coverage_categories.items():
+                if isinstance(category_data, dict) and 'checkpoint_count' in category_data:
+                    checkpoint_count = category_data['checkpoint_count']
+                    category_name = category_key.replace('_', ' ').title()
+                    category_title = f"{category_name}: {checkpoint_count} checkpoints"
+                    category_anchor = self._create_anchor(f"coverage_{section_id}_{category_key}")
+
+                    category_style = ParagraphStyle(
+                        f'CoverageCategory{level}',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('secondary'),
+                        spaceBefore=4,
+                        spaceAfter=2,
+                        leftIndent=30,
+                        fontSize=12
+                    )
+
+                    category_with_anchor = f'<a name="{category_anchor}"/>{category_title}'
+                    content.append(Paragraph(category_with_anchor, category_style))
+
+                    # Render the content within this coverage category
+                    content.extend(self._render_coverage_category_content(category_data, level + 1))
+
+        # Render key gap analysis fields with special formatting
+        priority_fields = ['combined_gap_analysis', 'combined_supporting_evidence', 'strategic_recommendations']
+
+        for field_key in priority_fields:
+            if field_key in gap_data and isinstance(gap_data[field_key], str) and gap_data[field_key].strip():
+                # Create a prominent header for these important fields
+                field_title = field_key.replace('_', ' ').title()
+                field_header_style = ParagraphStyle(
+                    f'FieldHeader{level}',
+                    parent=self.style_manager.styles['normal'],
+                    textColor=self.style_manager.get_color('primary'),
+                    spaceBefore=8,
+                    spaceAfter=4,
+                    leftIndent=30,
+                    fontSize=14,
+                    fontName='Helvetica-Bold'
+                )
+                content.append(Paragraph(field_title, field_header_style))
+
+                # Render the content
+                content.extend(self._render_as_paragraph("", gap_data[field_key], level + 1))
+
+        # Render other gap analysis content (summary, etc.)
+        for key, value in gap_data.items():
+            if (key not in ['coverage_categories'] + priority_fields and
+                not key.lower() in self.excluded_keys):
+                if isinstance(value, dict):
+                    content.extend(self._render_as_section(key, value, level))
+                elif isinstance(value, str) and len(value) > 50:
+                    content.extend(self._render_as_paragraph(key, value, level))
+                else:
+                    content.extend(self._render_as_field(key, value, level))
+
+        return content
+
+    def _render_coverage_category_content(self, category_data: Dict, level: int) -> List:
+        """Render the content within a coverage category (excellent_coverage, good_coverage, etc.)."""
+        content = []
+
+        # Priority fields that should be prominently displayed
+        priority_fields = ['combined_gap_analysis', 'combined_supporting_evidence']
+
+        for field_key in priority_fields:
+            if field_key in category_data and isinstance(category_data[field_key], str):
+                field_value = category_data[field_key].strip()
+                if field_value and field_value != "No checkpoints in this category":
+                    # Create a prominent header for these important fields
+                    field_title = field_key.replace('_', ' ').title()
+                    field_header_style = ParagraphStyle(
+                        f'CategoryFieldHeader{level}',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('primary'),
+                        spaceBefore=6,
+                        spaceAfter=3,
+                        leftIndent=40,
+                        fontSize=12,
+                        fontName='Helvetica-Bold'
+                    )
+                    content.append(Paragraph(field_title, field_header_style))
+
+                    # Render the content with proper markdown formatting
+                    if self._is_markdown_content(field_value):
+                        # Use markdown rendering for properly formatted content
+                        markdown_content = self._render_markdown_content("", field_value, level + 1)
+                        # Adjust indentation for markdown content
+                        for item in markdown_content:
+                            if hasattr(item, 'style') and hasattr(item.style, 'leftIndent'):
+                                item.style.leftIndent += 40  # Add extra indentation
+                        content.extend(markdown_content)
+                    else:
+                        # Fallback to simple paragraph for non-markdown content
+                        field_content_style = ParagraphStyle(
+                            f'CategoryFieldContent{level}',
+                            parent=self.style_manager.styles['normal'],
+                            textColor=self.style_manager.get_color('text'),
+                            spaceBefore=2,
+                            spaceAfter=4,
+                            leftIndent=50,
+                            fontSize=8,
+                            leading=10
+                        )
+                        content.append(Paragraph(field_value, field_content_style))
+
+        # Render other fields in the category (excluding checkpoint_count and priority fields)
+        for key, value in category_data.items():
+            if (key not in ['checkpoint_count'] + priority_fields and
+                not key.lower() in self.excluded_keys):
+                if isinstance(value, str) and len(value) > 20 and value.strip():
+                    # Render as a field with content
+                    field_title = key.replace('_', ' ').title()
+                    field_header_style = ParagraphStyle(
+                        f'CategoryOtherFieldHeader{level}',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('secondary'),
+                        spaceBefore=4,
+                        spaceAfter=2,
+                        leftIndent=40,
+                        fontSize=8,
+                        fontName='Helvetica-Bold'
+                    )
+                    content.append(Paragraph(field_title, field_header_style))
+
+                    # Use markdown rendering if applicable
+                    if isinstance(value, str) and self._is_markdown_content(value):
+                        markdown_content = self._render_markdown_content("", value, level + 1)
+                        # Adjust indentation for markdown content
+                        for item in markdown_content:
+                            if hasattr(item, 'style') and hasattr(item.style, 'leftIndent'):
+                                item.style.leftIndent += 40
+                        content.extend(markdown_content)
+                    else:
+                        field_content_style = ParagraphStyle(
+                            f'CategoryOtherFieldContent{level}',
+                            parent=self.style_manager.styles['normal'],
+                            textColor=self.style_manager.get_color('text'),
+                            spaceBefore=1,
+                            spaceAfter=3,
+                            leftIndent=50,
+                            fontSize=8,
+                            leading=9
+                        )
+                        content.append(Paragraph(str(value), field_content_style))
+
+        return content
+
+    def _extract_modules_toc_entries(self, modules_structure: Dict, level: int, full_data: Any = None):
+        """Extract TOC entries from modules structure."""
+        # Sort modules by numerical order (M1, M2, M3, etc.)
+        def module_sort_key(item):
+            module_key = item[0]
+            # Extract number from module key (e.g., "M1" -> 1, "M3" -> 3)
+            try:
+                if module_key.startswith('M'):
+                    return int(module_key[1:])
+                else:
+                    return float('inf')  # Put non-standard keys at the end
+            except (ValueError, IndexError):
+                return float('inf')
+
+        sorted_modules = sorted(modules_structure.items(), key=module_sort_key)
+
+        for module_key, module_data in sorted_modules:
+            if not isinstance(module_data, dict):
+                continue
+
+            module_label = module_data.get('module_label', module_key)
+            sections = module_data.get('sections', {})
+
+            # Add module to TOC
+            module_anchor = self._create_anchor(f"module_{module_key}")
+            self.toc_entries.append({
+                'title': module_label,
+                'anchor': module_anchor,
+                'level': 0
+            })
+
+            # Sort sections by section key for consistent ordering
+            sorted_sections = sorted(sections.items(), key=lambda x: self._parse_section_number(x[0]))
+
+            for section_key, section_items in sorted_sections:
+                if not isinstance(section_items, list):
+                    continue
+
+                # Add section to TOC
+                section_title = f"Section {section_key}"
+                section_anchor = self._create_anchor(f"section_{module_key}_{section_key}")
+                self.toc_entries.append({
+                    'title': section_title,
+                    'anchor': section_anchor,
+                    'level': 1
+                })
+
+                # Add coverage analysis entries for each subsection
+                for item in section_items:
+                    if isinstance(item, dict):
+                        section_id = item.get('section_id', '')
+                        section_title_text = item.get('section_title', '')
+                        gap_data = item.get('gap_data', {})
+
+                        # Add subsection to TOC
+                        subsection_title = f"{section_id}: {section_title_text}" if section_title_text else section_id
+                        subsection_anchor = self._create_anchor(f"subsection_{module_key}_{section_key}_{section_id}")
+                        self.toc_entries.append({
+                            'title': subsection_title,
+                            'anchor': subsection_anchor,
+                            'level': 2
+                        })
+
+                        # Add coverage categories to TOC
+                        coverage_categories = gap_data.get('coverage_categories', {})
+                        for category_key, category_data in coverage_categories.items():
+                            if isinstance(category_data, dict) and 'checkpoint_count' in category_data:
+                                checkpoint_count = category_data['checkpoint_count']
+                                category_name = category_key.replace('_', ' ').title()
+                                category_title = f"{category_name}: {checkpoint_count} checkpoints"
+                                category_anchor = self._create_anchor(f"coverage_{section_id}_{category_key}")
+                                self.toc_entries.append({
+                                    'title': category_title,
+                                    'anchor': category_anchor,
+                                    'level': 3
+                                })
+
+    def _parse_section_number(self, section_key: str) -> tuple:
+        """Parse section number for proper sorting (e.g., '1.4.1' -> (1, 4, 1))."""
+        try:
+            parts = section_key.split('.')
+            return tuple(int(part) for part in parts)
+        except (ValueError, AttributeError):
+            return (float('inf'),)  # Put non-numeric sections at the end
 
     def _render_array_as_document(self, arr: List, level: int) -> List:
         """Render JSON array as a document with intelligent formatting."""
@@ -755,7 +1265,11 @@ class JSONToPDFConverter:
             if self._is_markdown_content(value):
                 return False
             stripped = value.lstrip()
-            return stripped.startswith(('-', '•')) or '\n- ' in value or '\n•' in value
+            # Treat square bullets as list markers too
+            bullet_starts = ('- ', '• ', '▪ ', '▫ ')
+            if any(stripped.startswith(bs) for bs in bullet_starts):
+                return True
+            return any(b in value for b in ('\n- ', '\n• ', '\n▪ ', '\n▫ '))
         return False
 
     def _is_bullet_list(self, arr: List) -> bool:
@@ -977,20 +1491,33 @@ class JSONToPDFConverter:
         return content
 
     def _render_as_bullet_list(self, items: List, level: int) -> List:
-        """Render as bullet points."""
+        """Render as bullet points with variety."""
         content = []
+
+        # Different bullet symbols for different levels
+        # Use only widely supported glyphs to avoid fallback squares in some viewers
+        bullet_symbols = ['•', '-', '-', '-', '-']
+        bullet_symbol = bullet_symbols[level % len(bullet_symbols)]
+        # Make dot bullets larger and dashes normal sized
+        if bullet_symbol == '•':
+            bullet_font_size = 14  # larger main bullet
+        else:  # '-'
+            bullet_font_size = 12  # dash bullets at normal size
 
         for item in items:
             bullet_style = ParagraphStyle(
                 'BulletPoint',
                 parent=self.style_manager.styles['normal'],
-                leftIndent=20 + (level * 15),
-                bulletIndent=10 + (level * 15),
-                spaceBefore=3,
-                spaceAfter=3,
-                bulletFontName='Symbol',
-                bulletText='•',
-                bulletColor=self.style_manager.get_color('primary')
+                leftIndent=8 + (level * 10),
+                bulletIndent=0,  # No gap between bullet and text
+                spaceBefore=2,
+                spaceAfter=2,
+                bulletFontName='Helvetica',
+                bulletFontSize=bullet_font_size,
+                bulletText=bullet_symbol,
+                bulletColor=self.style_manager.get_color('primary'),
+                fontSize=10,
+                leading=12
             )
 
             if isinstance(item, dict):
@@ -1005,9 +1532,9 @@ class JSONToPDFConverter:
                         content_style = ParagraphStyle(
                             'BulletContent',
                             parent=self.style_manager.styles['normal'],
-                            leftIndent=35 + (level * 15),
-                            spaceBefore=2,
-                            spaceAfter=3
+                            leftIndent=18 + (level * 12),  # Tighter indentation
+                            spaceBefore=1,
+                            spaceAfter=2
                         )
                         content.append(Paragraph(str(v), content_style))
                     elif isinstance(v, list):
@@ -1274,12 +1801,15 @@ class JSONToPDFConverter:
                     bullet_style = ParagraphStyle(
                         'MarkdownBullet',
                         parent=self.style_manager.styles['normal'],
-                        leftIndent=20,
-                        spaceBefore=3,
-                        spaceAfter=3,
-                        bulletIndent=10,
-                        bulletFontName='Symbol',
-                        bulletText='•'
+                        leftIndent=8,
+                        spaceBefore=2,
+                        spaceAfter=2,
+                        bulletIndent=0,  # No gap between bullet and text
+                        bulletFontName='Helvetica',
+                        bulletFontSize=14,
+                        bulletText='•',  # Round bullet for main points (larger)
+                        fontSize=10,
+                        leading=12
                     )
                     content.append(Paragraph(self._format_text(bullet_text), bullet_style))
 
@@ -1289,12 +1819,15 @@ class JSONToPDFConverter:
                     sub_bullet_style = ParagraphStyle(
                         'MarkdownSubBullet',
                         parent=self.style_manager.styles['normal'],
-                        leftIndent=40,
-                        spaceBefore=2,
-                        spaceAfter=2,
-                        bulletIndent=30,
-                        bulletFontName='Symbol',
-                        bulletText='◦'
+                        leftIndent=18,
+                        spaceBefore=1,
+                        spaceAfter=1,
+                        bulletIndent=0,  # No gap between bullet and text
+                        bulletFontName='Helvetica',
+                        bulletFontSize=12,
+                        bulletText='-',  # Use dash for sub-bullets to avoid square glyphs
+                        fontSize=9,
+                        leading=11
                     )
                     content.append(Paragraph(self._format_text(sub_bullet_text), sub_bullet_style))
 
