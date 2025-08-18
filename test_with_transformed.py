@@ -13,7 +13,7 @@ def main():
     
     # Generate PDF from the transformed JSON file
     input_file = "sample_data/First Sample Job Test 2_transformed_2025-08-18T09-39-44-682Z.json"
-    output_file = "output/transformed_mapping6.pdf"
+    output_file = "output/transformed_mapping7.pdf"
     
     # Ensure output directory exists
     os.makedirs("output", exist_ok=True)

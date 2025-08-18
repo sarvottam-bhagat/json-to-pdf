@@ -1583,6 +1583,7 @@ class JSONToPDFConverter:
         markdown_indicators = [
             '##',  # Headers
             '###',  # Subheaders
+            '####',  # Sub-subheaders
             '**',  # Bold text
             '- ',  # Bullet points
             '> ',  # Blockquotes
@@ -1742,6 +1743,33 @@ class JSONToPDFConverter:
                     # Add anchor to the paragraph
                     subheader_with_anchor = f'<a name="{anchor}"/>{self._format_text(subheader_text)}'
                     content.append(Paragraph(subheader_with_anchor, subheader_style))
+
+                elif line.startswith('#### '):
+                    # Sub-subheader (H4)
+                    h4_text = line[5:].strip()
+
+                    # Create anchor and add to TOC if it should be included
+                    anchor = self._create_anchor(h4_text)
+                    if self._should_include_in_toc(h4_text, level + 2):
+                        self.toc_entries.append({
+                            'title': h4_text,
+                            'anchor': anchor,
+                            'level': level + 2
+                        })
+
+                    h4_style = ParagraphStyle(
+                        'MarkdownH4',
+                        parent=self.style_manager.styles['normal'],
+                        textColor=self.style_manager.get_color('secondary'),
+                        spaceBefore=8,
+                        spaceAfter=3,
+                        fontSize=11,
+                        fontName='Helvetica-Bold'
+                    )
+
+                    # Add anchor to the paragraph
+                    h4_with_anchor = f'<a name="{anchor}"/>{self._format_text(h4_text)}'
+                    content.append(Paragraph(h4_with_anchor, h4_style))
 
                 elif line.startswith('- '):
                     # Main bullet point
