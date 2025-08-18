@@ -24,7 +24,12 @@ def generate_toc_for_file(input_file, output_file):
     section_analyses = gap_report.get("section_analyses", {})
 
     # Add format information
-    format_name = "Mapping JSON" if detected_format == DataFormat.MAPPING_JSON else "Test JSON"
+    format_map = {
+        DataFormat.MAPPING_JSON: "Mapping JSON",
+        DataFormat.TEST_JSON: "Test JSON", 
+        DataFormat.TRANSFORMED_MAPPING: "Transformed Mapping JSON"
+    }
+    format_name = format_map.get(detected_format, "Unknown Format")
     toc.append(f"Gap Analysis Report - {format_name}")
     toc.append("=" * 50)
     toc.append("")
@@ -43,39 +48,67 @@ def generate_toc_for_file(input_file, output_file):
                 toc.append(f"  Source File: {filenames}")
         toc.append("")
 
-    # Sort sections by section number for proper ordering
-    def sort_key(item):
-        section_id, section_data = item
-        if isinstance(section_data, dict):
-            section_num = section_data.get('section', section_id)
-            # Parse section number for proper sorting (e.g., "1.1", "1.2", "1.10")
+    # Check if we have modules_structure (hierarchical format)
+    modules_structure = gap_report.get('modules_structure', {})
+    
+    if modules_structure:
+        # Use hierarchical module structure
+        # Sort modules by key (M1, M2, M3, etc.)
+        def module_sort_key(item):
+            module_key = item[0]
             try:
-                # Split by dots and convert to integers for proper numerical sorting
-                parts = [int(x) for x in str(section_num).split('.')]
-                return parts
-            except (ValueError, AttributeError):
-                # Fallback to string sorting if parsing fails
-                return [float('inf'), str(section_num)]
-        return [float('inf'), section_id]
+                if module_key.startswith('M'):
+                    return int(module_key[1:])
+                else:
+                    return float('inf')
+            except (ValueError, IndexError):
+                return float('inf')
 
-    sorted_sections = sorted(section_analyses.items(), key=sort_key)
+        sorted_modules = sorted(modules_structure.items(), key=module_sort_key)
+        
+        for module_key, module_data in sorted_modules:
+            module_label = module_data.get('module_label', module_key)
+            toc.append(f"{module_label}")
+            
+            sections = module_data.get('sections', {})
+            # Sort sections within module
+            sorted_sections = sorted(sections.items(), key=lambda x: x[0])
+            
+            for section_key, section_items in sorted_sections:
+                toc.append(f"    Section {section_key}")
+                
+                # Add section items under this section
+                for item in section_items:
+                    section_id = item.get('section_id', section_key)
+                    section_title = item.get('section_title', '')
+                    toc.append(f"        {section_id}: {section_title}")
+            
+            toc.append("")  # Empty line between modules
+    
+    else:
+        # Fallback to old flat structure for backward compatibility
+        # Sort sections by section number for proper ordering
+        def sort_key(item):
+            section_id, section_data = item
+            if isinstance(section_data, dict):
+                section_num = section_data.get('section', section_id)
+                # Parse section number for proper sorting (e.g., "1.1", "1.2", "1.10")
+                try:
+                    # Split by dots and convert to integers for proper numerical sorting
+                    parts = [int(x) for x in str(section_num).split('.')]
+                    return parts
+                except (ValueError, AttributeError):
+                    # Fallback to string sorting if parsing fails
+                    return [float('inf'), str(section_num)]
+            return [float('inf'), section_id]
 
-    # Add sections in sorted order
-    for section_id, section_data in sorted_sections:
-        section_title = section_data.get("section_title", "")
-        toc.append(f"Section {section_id}: {section_title}")
+        sorted_sections = sorted(section_analyses.items(), key=sort_key)
 
-        coverage_analysis = []
-        coverage_categories = section_data.get("coverage_categories", {})
-        for category, details in coverage_categories.items():
-            if isinstance(details, dict) and "checkpoint_count" in details:
-                checkpoint_count = details["checkpoint_count"]
-                category_name = category.replace('_', ' ').title()
-                coverage_analysis.append(f"{category_name}: {checkpoint_count} checkpoints")
-
-        if coverage_analysis:
-            toc.append("\t\t" + "\n\t\t".join(coverage_analysis))
-        toc.append("")
+        # Add sections in sorted order (without coverage analysis)
+        for section_id, section_data in sorted_sections:
+            section_title = section_data.get("section_title", "")
+            toc.append(f"Section {section_id}: {section_title}")
+            toc.append("")
 
     # Write TOC
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -85,10 +118,11 @@ def generate_toc_for_file(input_file, output_file):
     print(f"TOC generated: {output_file}")
 
 def main():
-    # Generate TOC for both formats
+    # Generate TOC for all supported formats
     test_files = [
         ("sample_data/test.json", "output/toc_test.txt"),
-        ("sample_data/mapping.json", "output/toc_mapping.txt")
+        ("sample_data/mapping.json", "output/toc_mapping.txt"),
+        ("sample_data/First Sample Job Test 2_transformed_2025-08-18T09-39-44-682Z.json", "output/toc_transformed.txt")
     ]
 
     for input_file, output_file in test_files:

@@ -84,7 +84,7 @@ class JSONToPDFConverter:
             if title is None:
                 # Create a more descriptive title based on detected format
                 detected_format = self.mapping_extractor.get_detected_format()
-                if detected_format == DataFormat.MAPPING_JSON:
+                if detected_format in [DataFormat.MAPPING_JSON, DataFormat.TRANSFORMED_MAPPING]:
                     title = f"Gap Analysis Report: {os.path.basename(input_file)}"
                 else:
                     title = f"JSON Document: {os.path.basename(input_file)}"
@@ -119,7 +119,7 @@ class JSONToPDFConverter:
             # Update title based on detected format if it's the default
             if title == "JSON Document":
                 detected_format = self.mapping_extractor.get_detected_format()
-                if detected_format == DataFormat.MAPPING_JSON:
+                if detected_format in [DataFormat.MAPPING_JSON, DataFormat.TRANSFORMED_MAPPING]:
                     title = "Gap Analysis Report"
 
             self._generate_pdf(normalized_data, normalized_analysis, output_file, title)
@@ -234,7 +234,12 @@ class JSONToPDFConverter:
         # Add detected format information
         detected_format = self.mapping_extractor.get_detected_format()
         if detected_format != DataFormat.UNKNOWN:
-            format_name = "Mapping JSON" if detected_format == DataFormat.MAPPING_JSON else "Test JSON"
+            format_map = {
+                DataFormat.MAPPING_JSON: "Mapping JSON",
+                DataFormat.TEST_JSON: "Test JSON",
+                DataFormat.TRANSFORMED_MAPPING: "Transformed Mapping JSON"
+            }
+            format_name = format_map.get(detected_format, "Unknown")
             info_data.append(['Format:', format_name])
 
         # Add mapping-specific metadata if available
@@ -410,21 +415,7 @@ class JSONToPDFConverter:
                         'level': 0  # Main section level
                     })
 
-                    # Extract coverage categories if they exist
-                    coverage_categories = section_data.get('coverage_categories', {})
-                    if isinstance(coverage_categories, dict):
-                        for category_key, category_data in coverage_categories.items():
-                            if isinstance(category_data, dict) and 'checkpoint_count' in category_data:
-                                checkpoint_count = category_data['checkpoint_count']
-                                category_name = category_key.replace('_', ' ').title()
-                                category_title = f"{category_name}: {checkpoint_count} checkpoints"
-                                category_anchor = self._create_anchor(f"coverage_{section_num}_{category_key}")
-
-                                self.toc_entries.append({
-                                    'title': category_title,
-                                    'anchor': category_anchor,
-                                    'level': 1  # Sub-level for coverage categories
-                                })
+                    # Coverage categories removed from TOC as per manager's request
 
 
     
@@ -1150,19 +1141,7 @@ class JSONToPDFConverter:
                             'level': 2
                         })
 
-                        # Add coverage categories to TOC
-                        coverage_categories = gap_data.get('coverage_categories', {})
-                        for category_key, category_data in coverage_categories.items():
-                            if isinstance(category_data, dict) and 'checkpoint_count' in category_data:
-                                checkpoint_count = category_data['checkpoint_count']
-                                category_name = category_key.replace('_', ' ').title()
-                                category_title = f"{category_name}: {checkpoint_count} checkpoints"
-                                category_anchor = self._create_anchor(f"coverage_{section_id}_{category_key}")
-                                self.toc_entries.append({
-                                    'title': category_title,
-                                    'anchor': category_anchor,
-                                    'level': 3
-                                })
+                        # Coverage categories removed from TOC as per manager's request
 
     def _parse_section_number(self, section_key: str) -> tuple:
         """Parse section number for proper sorting (e.g., '1.4.1' -> (1, 4, 1))."""

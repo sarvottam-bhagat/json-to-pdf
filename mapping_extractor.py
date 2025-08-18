@@ -16,6 +16,7 @@ class DataFormat(Enum):
     """Enumeration of supported data formats."""
     TEST_JSON = "test_json"
     MAPPING_JSON = "mapping_json"
+    TRANSFORMED_MAPPING = "transformed_mapping"
     UNKNOWN = "unknown"
 
 
@@ -39,7 +40,7 @@ class MappingDataExtractor:
         
     def detect_format(self, data: Dict[str, Any]) -> DataFormat:
         """
-        Detect whether the data is in test.json or mapping.json format.
+        Detect whether the data is in test.json, mapping.json, or transformed mapping format.
         
         Args:
             data: The JSON data to analyze
@@ -51,6 +52,8 @@ class MappingDataExtractor:
             return DataFormat.TEST_JSON
         elif "result" in data and "job_id" in data:
             return DataFormat.MAPPING_JSON
+        elif self._is_transformed_mapping(data):
+            return DataFormat.TRANSFORMED_MAPPING
         else:
             return DataFormat.UNKNOWN
     
@@ -80,7 +83,7 @@ class MappingDataExtractor:
     
     def extract_from_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract and normalize data from either format.
+        Extract and normalize data from any supported format.
         
         Args:
             data: The JSON data to process
@@ -97,8 +100,10 @@ class MappingDataExtractor:
             return self._extract_from_test_format(data)
         elif self.detected_format == DataFormat.MAPPING_JSON:
             return self._extract_from_mapping_format(data)
+        elif self.detected_format == DataFormat.TRANSFORMED_MAPPING:
+            return self._extract_from_transformed_format(data)
         else:
-            raise ValueError("Unsupported data format. Expected test.json or mapping.json structure.")
+            raise ValueError("Unsupported data format. Expected test.json, mapping.json, or transformed mapping structure.")
     
     def _extract_from_test_format(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -318,5 +323,75 @@ class MappingDataExtractor:
                 }
                 for s in sections
             ]
+            
+        elif format_type == DataFormat.TRANSFORMED_MAPPING:
+            sections = self._extract_all_sections(data)
+            return [
+                {
+                    "section_id": s.section_id,
+                    "section_title": s.section_title,
+                    "module_label": s.module_label,
+                    "section_key": s.section_key,
+                    "format": "transformed_mapping"
+                }
+                for s in sections
+            ]
         
         return []
+    
+    def _is_transformed_mapping(self, data: Dict[str, Any]) -> bool:
+        """
+        Detect if the data is in transformed mapping format (direct module structure).
+        
+        Args:
+            data: The JSON data to analyze
+            
+        Returns:
+            bool: True if this is transformed mapping format
+        """
+        if not isinstance(data, dict) or len(data) == 0:
+            return False
+            
+        # Check if we have module keys (M1, M2, etc.) at top level
+        module_keys = [k for k in data.keys() if k.startswith('M') and len(k) > 1 and k[1:].isdigit()]
+        if not module_keys:
+            return False
+        
+        # Check if modules have expected structure
+        for module_key in module_keys:
+            module_data = data.get(module_key, {})
+            if not isinstance(module_data, dict):
+                return False
+            if 'label' not in module_data or 'sections' not in module_data:
+                return False
+                
+        return True
+    
+    def _extract_from_transformed_format(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract data from transformed mapping format and convert to test.json structure.
+        
+        Args:
+            data: Transformed mapping format JSON data (direct module structure)
+            
+        Returns:
+            Dict: Data converted to test.json format
+        """
+        # Create synthetic job metadata since it's missing in transformed format
+        job_metadata = {
+            "job_id": None,
+            "user_id": None,
+            "status": "unknown",
+            "filename": None,
+            "name": "Transformed Gap Analysis Data",
+            "created_at": None,
+            "updated_at": None
+        }
+        
+        # Extract all sections directly from top-level modules (no 'result' wrapper)
+        extracted_sections = self._extract_all_sections(data)
+        
+        # Convert to test.json format
+        normalized_data = self._convert_to_test_format(extracted_sections, job_metadata)
+        
+        return normalized_data
