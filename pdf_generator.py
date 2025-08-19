@@ -343,8 +343,8 @@ class JSONToPDFConverter:
                 section_title = section_data.get('section_title', '')
 
                 if section_title:
-                    # Create section header entry
-                    section_header = f"Section {section_num}: {section_title}"
+                    # Create section header entry - use just the section title
+                    section_header = section_title
                     section_anchor = self._create_anchor(f"section_{section_num}_{section_title}")
 
                     self.toc_entries.append({
@@ -1085,8 +1085,17 @@ class JSONToPDFConverter:
                 if not isinstance(section_items, list):
                     continue
 
+                # Get the section title from the first item in the section
+                section_title = f"Section {section_key}"  # Default fallback
+                if section_items and isinstance(section_items, list) and len(section_items) > 0:
+                    first_item = section_items[0]
+                    if isinstance(first_item, dict) and 'section_title' in first_item:
+                        actual_section_title = first_item.get('section_title', '').strip()
+                        if actual_section_title:
+                            # Use just the section title
+                            section_title = actual_section_title
+                
                 # Add section to TOC
-                section_title = f"Section {section_key}"
                 section_anchor = self._create_anchor(f"section_{module_key}_{section_key}")
                 self.toc_entries.append({
                     'title': section_title,
@@ -1101,16 +1110,17 @@ class JSONToPDFConverter:
                         section_title_text = item.get('section_title', '')
                         gap_data = item.get('gap_data', {})
 
-                        # Add subsection to TOC
-                        subsection_title = f"{section_id}: {section_title_text}" if section_title_text else section_id
-                        subsection_anchor = self._create_anchor(f"subsection_{module_key}_{section_key}_{section_id}")
-                        self.toc_entries.append({
-                            'title': subsection_title,
-                            'anchor': subsection_anchor,
-                            'level': 2
-                        })
+                        # Only add items with gap_data as subsections (skip main section placeholders)
+                        if gap_data and section_title_text:
+                            subsection_title = f"{section_id}: {section_title_text}"
+                            subsection_anchor = self._create_anchor(f"subsection_{module_key}_{section_key}_{section_id}")
+                            self.toc_entries.append({
+                                'title': subsection_title,
+                                'anchor': subsection_anchor,
+                                'level': 2
+                            })
 
-                        # Coverage categories removed from TOC as per manager's request
+                        # Coverage categories removed from TOC
 
     def _parse_section_number(self, section_key: str) -> tuple:
         """Parse section number for proper sorting (e.g., '1.4.1' -> (1, 4, 1))."""

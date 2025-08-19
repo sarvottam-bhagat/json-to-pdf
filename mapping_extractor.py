@@ -173,6 +173,20 @@ class MappingDataExtractor:
                 section_title = section.get("section_title", "")
                 pre_ind_maps = section.get("pre_ind_maps", [])
                 
+                # First, add the main section entry (if it has a meaningful title)
+                if section_title and section_title.strip():
+                    main_section = ExtractedSection(
+                        section_id=section_key,
+                        section_title=section_title,  # Use top-level section title
+                        module_key=module_key,
+                        module_label=module_label,
+                        section_key=section_key,
+                        gap_analysis_data={},  # No specific gap data for main section
+                        strategic_recommendations=None
+                    )
+                    sections.append(main_section)
+                
+                # Then, add subsection entries from pre_ind_maps
                 for pre_ind_map in pre_ind_maps:
                     if not isinstance(pre_ind_map, dict):
                         continue
@@ -182,9 +196,12 @@ class MappingDataExtractor:
                         # Create section ID from pre_ind_section or use section_key
                         section_id = gap_result.get("section", section_key)
                         
+                        # For subsections, use the nested section_title from gap_result
+                        subsection_title = gap_result.get("section_title", "")
+                        
                         extracted_section = ExtractedSection(
                             section_id=section_id,
-                            section_title=gap_result.get("section_title", section_title),
+                            section_title=subsection_title,  # Use nested section title for subsections
                             module_key=module_key,
                             module_label=module_label,
                             section_key=section_key,
